@@ -1,0 +1,64 @@
+# dvaccess configuration. Copy to config/config.yaml and fill in your own ids.
+#
+# NO SECRETS BELONG IN THIS FILE. The service-principal secret is read from the
+# DVACCESS_CLIENT_SECRET environment variable (populate it from Azure Key Vault
+# in automation); without it, DefaultAzureCredential (e.g. `az login`) is used.
+# config/config.yaml is gitignored precisely so environment ids stay local.
+
+environment:
+  name: dev # short tag used in generated Entra group names
+  dataverse_url: https://<your-org>.crm.dynamics.com
+
+auth:
+  tenant_id: "00000000-0000-0000-0000-000000000000"
+  # App registration (client) id for service-principal auth. Leave null to use
+  # DefaultAzureCredential / `az login`. Note that Azure CLI credentials cannot
+  # answer Continuous Access Evaluation claims challenges, so tenants with
+  # IP-bound conditional access need a service principal for unattended runs.
+  client_id: null
+
+fabric:
+  # From the Fabric portal URL:
+  # https://app.fabric.microsoft.com/groups/<workspace_id>/lakehouses/<item_id>
+  workspace_id: "00000000-0000-0000-0000-000000000000"
+  item_id: "00000000-0000-0000-0000-000000000000" # lakehouse or mirrored database
+  # null for non-schema lakehouses (Dataverse Link to Fabric lakehouses are
+  # typically NOT schema-enabled). Confirm by listing the item's OneLake Tables/
+  # directory: a dbo/ folder means schema-enabled, table folders mean not.
+  # A wrong value here produces paths that match nothing and grant nothing.
+  schema_name: null
+  # OneLake requires role names to be alphanumeric and start with a letter.
+  # Only roles carrying this prefix are ever created, updated, or deleted.
+  role_prefix: dv
+  role_budget: 1000 # 250 by default; raise to 1000 via an Azure support request
+  # Compile only tables that exist in the item. Dataverse grants privileges on
+  # every table in the environment; only the synced subset is in the lakehouse.
+  restrict_to_item_tables: true
+
+entra:
+  # 'group': one Entra security group per access profile (recommended at scale -
+  #          sidesteps the 500-members-per-role limit entirely).
+  # 'direct': users assigned to roles directly, chunked at the member limit.
+  membership: group
+  group_prefix: dvsec-
+
+compile:
+  include_tables: [] # empty = every table carrying read privileges
+  exclude_tables: []
+  cls_enabled: false # field-security-profile column security (not yet implemented)
+  user_access_modes: [0, 1, 2] # Read-Write, Administrative, Read
+  rls_column: owningbusinessunit # user/team-owned tables
+  rls_column_business_owned: businessunitid # business-owned tables (e.g. role)
+
+limits:
+  max_members_per_role: 500
+  max_permissions_per_role: 500
+  max_rls_chars: 1000
+
+apply:
+  prune: false # true: delete managed roles that are no longer compiled
+  # Pre-existing roles to retire so this app is the single source of truth.
+  # e.g. ["*PWPolicy"] replaces roles left by Microsoft's Policy Weaver.
+  retire_role_patterns: []
+
+run_dir: runs

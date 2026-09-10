@@ -1,0 +1,31 @@
+# Environments
+.venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Local configuration: contains tenant, workspace, and environment ids.
+config/config.yaml
+
+# Run artifacts: snapshots contain the full user directory of a Dataverse
+# environment (names, Entra object ids, business units, role assignments).
+# Never commit these.
+runs/
+
+# Local assistant/editor instructions (may contain tenant and subscription ids)
+.github/copilot-instructions.md
+.claude/
+.cursor/
+CLAUDE.md
+
+# Secrets - belt and braces; secrets should never be in files at all
+*.env
+.env*
+*.pem
+*.key
+*secret*
+*credential*
