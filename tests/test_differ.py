@@ -103,3 +103,32 @@ def test_second_plan_after_apply_is_a_noop():
     second = build_plan(applied, "e2", desired, "dv_", prune=True)
     assert not second.has_changes
     assert second.unchanged == ["dv_a"]
+
+
+def test_live_round_trip_shape_is_not_a_change():
+    """Observed on a live item: Fabric adds server-managed id/kind/etag to each role
+    and drops objectType from members. None of that is a real change, so a plan
+    right after a successful apply must be empty."""
+    guid = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+    sent = role("dv_a", ["/Tables/a", "/Tables/b"], [guid])
+    live = role(
+        "dv_a", ["/Tables/b", "/Tables/a"], [guid.lower()],
+        extra={"id": "srv-id", "kind": "Policy", "etag": '"server-etag-1"'},
+    )
+    for member in live["members"]["microsoftEntraMembers"]:
+        del member["objectType"]
+    plan = build_plan([live], "e1", [sent], managed_prefix="dv_", prune=False)
+    assert not plan.has_changes
+    assert plan.unchanged == ["dv_a"]
+
+
+def test_relaxed_comparison_still_detects_a_member_change():
+    sent = role("dv_a", ["/Tables/a"], ["0ac2e25e-91a8-4bba-aa9a-cd31ff7bc013"])
+    live = role(
+        "dv_a", ["/Tables/a"], ["11111111-2222-3333-4444-555555555555"],
+        extra={"etag": '"x"'},
+    )
+    for member in live["members"]["microsoftEntraMembers"]:
+        del member["objectType"]
+    plan = build_plan([live], "e1", [sent], managed_prefix="dv_", prune=False)
+    assert plan.updates == ["dv_a"]

@@ -11,14 +11,23 @@ import fnmatch
 import json
 from dataclasses import dataclass, field
 
+_SERVER_MANAGED_FIELDS = frozenset({"id", "kind", "etag"})
+
 
 def normalize_role(role: dict) -> str:
-    """Canonical form for change detection: server-assigned fields dropped, all
-    unordered lists sorted, GUID-like strings lowercased."""
+    """Canonical form for change detection: server-managed fields (id, kind, etag)
+    dropped, unordered lists sorted, GUID-like strings lowercased. Members compare by
+    objectId alone: Fabric does not round-trip objectType, and an objectId already
+    identifies exactly one directory object."""
 
     def canon(value: object) -> object:
         if isinstance(value, dict):
-            return {k: canon(v) for k, v in sorted(value.items()) if k not in ("id", "kind")}
+            is_member = "objectId" in value
+            return {
+                k: canon(v)
+                for k, v in sorted(value.items())
+                if k not in _SERVER_MANAGED_FIELDS and not (is_member and k == "objectType")
+            }
         if isinstance(value, list):
             return sorted((canon(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
         if isinstance(value, str) and _looks_like_guid(value):
