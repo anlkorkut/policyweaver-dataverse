@@ -2,11 +2,12 @@
 
 Endpoints used (all reads, OData v4, paged at 5000 rows via Prefer maxpagesize):
 - businessunits, systemusers, teams, roles (componentstate eq 0)
-- RetrieveRolePrivilegesRole(RoleId=...) per role -> privileges with depth
-- roles(id)/systemuserroles_association, roles(id)/teamroles_association
-- teams(id)/teammembership_association
-- fieldsecurityprofiles(+associations), fieldpermissions
 - EntityDefinitions -> LogicalName/SchemaName/ObjectTypeCode/OwnershipType
+- RetrieveRolePrivilegesRole(RoleId=...) once per ROOT role -> privileges with depth
+- N:N intersect entities for assignments: systemuserrolescollection,
+  teamrolescollection, teammemberships
+- fieldsecurityprofiles, fieldpermissions, systemuserprofilescollection,
+  teamprofilescollection
 
 Read privileges are resolved to tables by matching the privilege name suffix
 (prvRead<SchemaName>) against entity metadata; unmatched names are recorded in
@@ -62,7 +63,9 @@ class DataverseClient:
         self._tokens = token_provider
         self._scope = dataverse_scope(self.environment_url)
         self._page_size = page_size
-        self._http = httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0))
+        # Calls normally return in well under a second, so a short read timeout turns
+        # a dropped connection into a logged retry instead of a long silent hang.
+        self._http = httpx.Client(timeout=httpx.Timeout(30.0, connect=15.0))
 
     def close(self) -> None:
         self._http.close()

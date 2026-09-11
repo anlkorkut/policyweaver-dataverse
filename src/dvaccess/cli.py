@@ -21,7 +21,7 @@ from azure.identity import CredentialUnavailableError
 
 from .apply.fabric_client import FabricClient
 from .apply.onelake_client import OneLakeClient
-from .auth import TokenProvider
+from .auth import TokenProvider, WrongTenantError
 from .compile.effective_access import build_index, explain_user, iter_user_scopes
 from .compile.onelake_model import RoleBudgetExceeded
 from .config import AppConfig, load_config
@@ -78,7 +78,7 @@ def cmd_extract(cfg: AppConfig, args: argparse.Namespace) -> Path:
         graph = GraphClient(tokens)
         try:
             merge_aad_team_members(snapshot, graph)
-        except ApiError as exc:
+        except (ApiError, CredentialUnavailableError) as exc:
             logger.warning(
                 "Could not resolve %d Entra-group team(s) via Graph (%s). "
                 "Their membership may be incomplete in this snapshot.",
@@ -349,9 +349,24 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 args.dry_run = False
                 _plan_or_apply(cfg, args, apply_changes=False)
+    except KeyboardInterrupt:
+        if args.command in ("apply", "run") and getattr(args, "yes", False):
+            logger.error(
+                "Interrupted during apply. Run 'dvaccess verify' to check the item's state."
+            )
+        else:
+            logger.error(
+                "Interrupted. '%s' is read-only for Dataverse, Entra and Fabric, so "
+                "nothing was changed.",
+                args.command,
+            )
+        return 130
     except RoleBudgetExceeded as exc:
         logger.error("%s", exc)
         return 2
+    except WrongTenantError as exc:
+        logger.error("%s", exc)
+        return 3
     except CredentialUnavailableError as exc:
         logger.error(
             "Authentication cannot proceed with the current credential: %s\n"

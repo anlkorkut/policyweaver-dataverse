@@ -16,6 +16,11 @@ auth:
   # answer Continuous Access Evaluation claims challenges, so tenants with
   # IP-bound conditional access need a service principal for unattended runs.
   client_id: null
+  # Without a service principal: the Azure CLI subscription whose cached account
+  # should be used. Needed on machines signed into several tenants - `az` otherwise
+  # uses its global default, and a token from the wrong tenant fails (Fabric reports
+  # it as "UserNotLicensed"). Every token's tenant is checked against tenant_id.
+  cli_subscription: null
 
 fabric:
   # From the Fabric portal URL:

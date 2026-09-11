@@ -23,6 +23,10 @@ class EnvironmentConfig(BaseModel):
 class AuthConfig(BaseModel):
     tenant_id: str
     client_id: str | None = None
+    # Used when no service-principal secret is set: the Azure CLI subscription whose
+    # cached account should authenticate. Selects the right tenant on machines signed
+    # into several directories, without changing the global `az` default.
+    cli_subscription: str | None = None
 
 
 class FabricConfig(BaseModel):
