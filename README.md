@@ -24,6 +24,7 @@ security, inside every OneLake limit, idempotently, and fail-closed.
 - [Install](#install)
 - [Configure](#configure)
 - [Usage](#usage)
+- [Running from VS Code](#running-from-vs-code)
 - [What you get out: run artifacts](#what-you-get-out-run-artifacts)
 - [Will it fit the role budget?](#will-it-fit-the-role-budget)
 - [Replacing an existing Policy Weaver deployment](#replacing-an-existing-policy-weaver-deployment)
@@ -147,6 +148,12 @@ fabric:
   item_id: "<from the portal URL>"
 ```
 
+**On a machine signed into several tenants**, also set `auth.cli_subscription` to
+a subscription in the target tenant. Otherwise `az` authenticates as whatever
+account is its global default. dvaccess checks every token's tenant against
+`auth.tenant_id` and stops with a clear error rather than calling the APIs with
+the wrong identity.
+
 **Finding the Fabric ids.** Open the lakehouse in the Fabric portal and read them
 straight out of the address bar:
 
@@ -240,6 +247,38 @@ Runs extract → compile → plan. Add `--yes` to apply as well.
 Each stage is idempotent: re-running `plan` after a successful `apply` reports no
 changes. Use `--run <run_id>` to re-compile against an older snapshot.
 
+## Running from VS Code
+
+`scripts/run-dvaccess.ps1` wraps the CLI for the VS Code PowerShell terminal. It
+creates the virtual environment on first run, resolves credentials, and runs one
+stage or the whole read-only pipeline.
+
+```powershell
+.\scripts
+un-dvaccess.ps1                        # extract -> compile -> plan (read-only)
+.\scripts
+un-dvaccess.ps1 -Stage plan -DryRun    # + server-side validation, still no writes
+.\scripts
+un-dvaccess.ps1 -Stage apply -Yes      # write roles to Fabric, then verify
+.\scripts
+un-dvaccess.ps1 -Stage verify          # drift check
+.\scripts
+un-dvaccess.ps1 -Stage explain -User someone@contoso.com
+```
+
+To use the service principal without writing its secret anywhere:
+
+```powershell
+.\scripts
+un-dvaccess.ps1 -KeyVaultName <vault> -SecretName <secret>   # fetched via az
+.\scripts
+un-dvaccess.ps1 -PromptForSecret                             # typed, hidden
+```
+
+Either way the secret exists only inside that PowerShell process and is cleared
+when the script exits. Without a secret, the script uses the Azure CLI account
+selected by `auth.cli_subscription`.
+
 ## What you get out: run artifacts
 
 Every run writes an audit trail to `runs/<run_id>/`:
@@ -313,6 +352,13 @@ Your tenant issued a Continuous Access Evaluation challenge. Either run the
 `az login --claims-challenge ...` command printed in the error, or switch to a
 service principal, which answers challenges automatically. This is the single most
 likely failure for long production extracts.
+
+**`401 UserNotLicensed` from Fabric, or "returned a token for tenant X, but auth.tenant_id is Y"**
+The Azure CLI is signed into a different tenant than the one in your config -
+common when one machine holds several `az` accounts. Set `auth.cli_subscription`
+to a subscription in the target tenant (your global `az` default can stay as it
+is), or use the service principal. dvaccess checks every token's tenant, so the
+mismatch is reported explicitly instead of surfacing as a license error.
 
 **`RequestBodyValidationFailed: Role has invalid name`**
 OneLake role names must start with a letter and contain only letters and numbers.
