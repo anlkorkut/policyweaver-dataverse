@@ -1,362 +1,119 @@
-# dvaccess — Dataverse → Fabric OneLake security compiler
+# Policy Weaver Dataverse read adapter
 
-Dataverse data syncs to Microsoft Fabric. Its **security model does not** — the
-roles, privileges, business units, and teams that decide who may read what stay
-behind in Dataverse. That gap is a blocker for regulated organizations adopting
-Fabric: the data lands in OneLake with none of the entitlements that governed it.
+Policy Weaver publishes Dataverse-authorized reader projections into isolated Microsoft Fabric lakehouses. Dataverse evaluates cumulative Read privileges, Basic/Local/Deep/Global depth, business units, teams, ownership, POA sharing and field-security results. The adapter queries as each selected reader and preserves returned values, including NULL and masking. OneLake enforces short reader-and-generation predicates over those projections.
 
-`dvaccess` closes the gap for **read** access. It extracts the Dataverse security
-model over the Web API, computes each user's *effective* read access, compresses
-users with identical access into **access profiles**, and materializes those
-profiles as OneLake data access roles — with static business-unit row-level
-security, inside every OneLake limit, idempotently, and fail-closed.
+This repository contains the Python adapter, operator CLI, optional Dataverse identity-proof plug-in, native OneLake publisher, expiry watchdog, tests and an agent skill. **Client-specific production qualification is required.** Extraction, role dry runs and admin queries do not establish consumer enforcement or a revocation SLA.
 
-> Scope is deliberately read-only. Create, write, and delete privileges are not
-> modeled, which removes a large amount of complexity.
+Upgrading from the earlier `dvaccess 0.1.0` repository? Follow [the migration guide](docs/MIGRATING-FROM-DVACCESS.md). The new adapter uses a different configuration and serving model; old deployments are not changed by a Git update.
 
----
+## Clone and invoke the skill
 
-## Contents
-
-- [Why not one OneLake role per Dataverse role?](#why-not-one-onelake-role-per-dataverse-role)
-- [How it works](#how-it-works)
-- [Prerequisites](#prerequisites)
-- [Install](#install)
-- [Configure](#configure)
-- [Usage](#usage)
-- [What you get out: run artifacts](#what-you-get-out-run-artifacts)
-- [Will it fit the role budget?](#will-it-fit-the-role-budget)
-- [Replacing an existing Policy Weaver deployment](#replacing-an-existing-policy-weaver-deployment)
-- [Troubleshooting](#troubleshooting)
-- [Guarantees, limitations, and residual gaps](#guarantees-limitations-and-residual-gaps)
-
----
-
-## Why not one OneLake role per Dataverse role?
-
-Because OneLake security has hard limits that a naive one-to-one sync breaks at
-enterprise scale:
-
-| Limit | Value |
-| --- | --- |
-| Roles per item | 250 (raise to 1,000 via Azure support) |
-| Members per role | 500 |
-| Permissions per role | 500 |
-| RLS predicate | 1,000 characters, **static SQL only** — no `CURRENT_USER` |
-| RLS + CLS across roles | mixing them on one table returns **query errors** |
-
-With tens of thousands of users, hundreds of roles stamped across dozens of
-business units, and thousands of tables, a role-per-role sync exceeds all of
-them at once. Worse, because users typically hold several roles, the RLS/CLS
-combination hazard produces users who get errors instead of data.
-
-`dvaccess` resolves multi-role users and overlapping team memberships **before**
-emitting any role, so each user lands in exactly one profile. That eliminates the
-cross-role hazard by construction, and makes role count track the number of
-*distinct access patterns* rather than roles × business units × users.
-
-## How it works
-
-```
-extract  →  compile  →  plan  →  apply  →  verify
-Dataverse    profiles     diff     write     read back
-snapshot     + roles    (no-op)   to Fabric  and confirm
+```text
+git clone https://github.com/anlkorkut/policyweaver-dataverse.git
+cd policyweaver-dataverse
 ```
 
-1. **extract** — snapshots users, teams, business units, role instances, read
-   privileges with their depth, assignments, and field security profiles into
-   `runs/<run_id>/snapshot.sqlite`. Entra-group-backed teams are resolved through
-   Microsoft Graph, because Dataverse materializes that membership lazily.
-2. **compile** — computes effective read access per user per table, applying
-   Dataverse's cumulative "greatest access prevails" semantics:
+Open your coding agent in the clone and use:
 
-   | Dataverse depth | Compiles to |
-   | --- | --- |
-   | Global, or any read on an org-owned table | all rows, no RLS |
-   | Deep | the role instance's business-unit subtree (collapses to all rows if it spans every BU) |
-   | Local | the role instance's business unit |
-   | Basic on a business-owned table | the user's own business unit |
-   | Basic on a user/team-owned table | **excluded and reported** — see below |
-
-   Users whose complete access maps are identical are hashed into one profile.
-3. **plan** — fetches the item's current roles, diffs only the roles this tool
-   manages, passes everything else through untouched, and checks the role budget.
-   Writes `plan.json`. **Never writes anything.**
-4. **apply** — reconciles one Entra security group per profile, then replaces the
-   item's role set with ETag concurrency control. Requires `--yes`.
-5. **verify** — re-reads the item and confirms it matches the compiled state.
-
-### Why Basic depth is excluded rather than approximated
-
-Basic ("user owns the record") depth cannot be expressed in OneLake, because RLS
-predicates are static — there is no `CURRENT_USER` function, and one role per
-user is not viable at scale. Rather than over-grant to the whole business unit,
-`dvaccess` **grants nothing** for those table/user pairs and lists every one of
-them in `basic_depth_exclusions.csv` for compliance sign-off. Fabric access is
-therefore always a subset of Dataverse access, never a superset.
-
-## Prerequisites
-
-**Runtime:** Python 3.11 or newer. Dependencies are pure-Python (`httpx`,
-`pydantic`, `azure-identity`, `PyYAML`).
-
-**Identity.** Either an interactive `az login`, or — recommended for production —
-a service principal supplying `auth.client_id` plus a `DVACCESS_CLIENT_SECRET`
-environment variable. A service principal is *required* if your tenant issues
-Continuous Access Evaluation claims challenges (common with IP-bound conditional
-access), because Azure CLI credentials cannot answer them.
-
-**Permissions the identity needs:**
-
-| System | Requirement |
-| --- | --- |
-| Dataverse | An application user (for a service principal) with read on `role`, `privilege`, `systemuser`, `team`, `businessunit`, `fieldsecurityprofile`, `fieldpermission` |
-| Microsoft Graph | `GroupMember.Read.All` to resolve Entra-group teams; `Group.ReadWrite.All` additionally if using `entra.membership: group` |
-| Fabric | A workspace role (Contributor or above) on the target workspace; for a service principal, also enable the tenant setting **"Service principals can use Fabric APIs"** |
-| OneLake | Read on the item's `Tables/` directory (used to discover which tables are actually synced) |
-
-## Install
-
-```bash
-py -3.11 -m venv .venv
+```text
+$policyweaver-dataverse
+Onboard this repository to my own Dataverse and Fabric environment.
+Ask for the minimum missing information, discover IDs using my approved account,
+create the client configuration and deployment plan, then guide me through
+provisioning, publication and actual-reader acceptance tests.
 ```
 
-```bash
-.venv/Scripts/pip install -e ".[dev]"
+The repository includes a [Codex-discoverable entrypoint](.agents/skills/policyweaver-dataverse/SKILL.md) and [the canonical skill](skills/policyweaver-dataverse/SKILL.md). No global skill installation is needed. For agents without repository-skill support, ask the agent to read the canonical file explicitly. Select the repository version if a personal skill has the same name. See [OpenAI's repository skill documentation](https://learn.chatgpt.com/docs/build-skills).
+
+Start with your **Dataverse URL, tenant ID and expected operator UPN**. Discovery retrieves the organization ID, operator object ID, candidate readers, logical table/field metadata, Fabric workspaces and lakehouse/SQL endpoint details. You choose the workspace, readers, columns, identity-proof mode, retention and required access paths. The workflow does not select all users or adopt a source lakehouse automatically.
+
+Follow the [client onboarding guide](docs/CLIENT-ONBOARDING.md) and [input/account reference](docs/CLIENT-INPUTS.md) for the complete procedure.
+
+## Terminal setup
+
+Use **64-bit Python 3.11** as the tested dependency baseline and Azure CLI. Later Python versions need qualification against the locked dependencies. Bootstrap uses the interpreter that launches it and creates a local virtual environment without changing Azure or global agent settings:
+
+```text
+python scripts/bootstrap_policyweaver.py --with-tests
 ```
 
-On Linux or macOS use `.venv/bin/pip` instead. This puts a `dvaccess` executable
-on the virtualenv's path.
+On Windows, use the virtual-environment Python explicitly:
 
-## Configure
-
-```bash
-cp config/config.example.yaml config/config.yaml
+```powershell
+.\.venv\Scripts\python.exe -m policyweaver.onboarding init --output-dir onboarding\client
 ```
 
-Then edit `config/config.yaml`. `config.example.yaml` documents every option; the
-four values you must set are:
+On macOS/Linux, use `.venv/bin/python`. Fill `onboarding/client/request.json`, sign in interactively to the expected tenant with Azure CLI, then run:
 
-```yaml
-environment:
-  dataverse_url: https://<your-org>.crm.dynamics.com
-auth:
-  tenant_id: "<your tenant guid>"
-fabric:
-  workspace_id: "<from the portal URL>"
-  item_id: "<from the portal URL>"
+```powershell
+.\.venv\Scripts\python.exe -m policyweaver.onboarding discover --request onboarding\client\request.json --output onboarding\client\inventory.json
 ```
 
-**Finding the Fabric ids.** Open the lakehouse in the Fabric portal and read them
-straight out of the address bar:
+Templates intentionally contain null identifiers. Discovery refuses incomplete inputs, mismatched accounts/tenants and incomplete inventories. It uses GET requests for metadata; it does not read business records or change permissions. Discover table candidates first, attributes for chosen tables next, then rediscover the exact selected fields. Each inventory uses a new filename.
 
-```
-https://app.fabric.microsoft.com/groups/<workspace_id>/lakehouses/<item_id>?...
-```
+After choosing the exact workspace, readers and table/column lists in `selections.json`, create a **new private deployment directory**:
 
-**Two settings worth getting right before your first run:**
-
-- `fabric.schema_name` — set to `null` for a non-schema lakehouse (which is what
-  Dataverse Link to Fabric normally creates) or to your schema name if the item is
-  schema-enabled. Getting this wrong produces role paths that match nothing and
-  silently grant nothing. Do not trust the `dbo` that appears in the portal URL —
-  that is the SQL analytics endpoint's implicit schema. Check the item's OneLake
-  `Tables/` directory instead: a `dbo/` folder means schema-enabled; table folders
-  directly under `Tables/` mean it is not.
-- `entra.membership` — `group` creates one Entra security group per profile and is
-  the right choice at scale, since it sidesteps the 500-members-per-role limit.
-  `direct` assigns users to roles individually and needs no Graph write access,
-  but consumes role budget when a profile exceeds 500 members.
-
-Secrets never belong in this file. `config/config.yaml` is gitignored so that
-environment ids stay local.
-
-## Usage
-
-Every command takes `--config <path>` (default `config/config.yaml`) and `-v` for
-debug logging.
-
-### The safe read-only path
-
-```bash
-dvaccess extract
+```powershell
+.\.venv\Scripts\python.exe -m policyweaver.onboarding configure --request onboarding\client\request.json --inventory onboarding\client\inventory-selected.json --selections onboarding\client\selections.json --output-dir client-local\pilot
+.\.venv\Scripts\python.exe -m policyweaver.onboarding validate --config client-local\pilot\policyweaver.config.json
 ```
 
-Snapshots Dataverse into `runs/<run_id>/snapshot.sqlite`. Touches nothing else.
+The final inventory must match the request and selected workspace. Configuration generation is offline. It creates `policyweaver.config.json`, `deployment-plan.json`, input evidence and `NEXT-STEPS.md`. It does not provision or publish, and refuses existing output directories.
 
-```bash
-dvaccess compile
+The operational sequence is `doctor` → authorized `provision` → portal/boundary setup → fresh `prepare` → `dry-run` → current boundary evidence → `publish` → actual-reader tests. Prepare after provisioning because new item IDs change the config hash. Keep the configuration, state and creation receipts to resume safely. Have an independent monitored watchdog ready before timed publication.
+
+For live preparation logs:
+
+```powershell
+.\scripts\Run-PolicyWeaver.ps1 -Operation Prepare -Config client-local\pilot\policyweaver.config.json
 ```
 
-Builds profiles and role definitions from the most recent snapshot, and writes
-the reports. **This is the command that answers "will this fit?"** — check the
-compiled role count against your budget before going further.
+See [terminal operation](docs/TERMINAL-AND-PRODUCTION.md). Direct CLI commands support `--progress` for sanitized JSON Lines on stderr and result JSON on stdout. Preparation writes sensitive per-reader data to the config-relative state directory; it grants no Fabric access.
 
-```bash
-dvaccess plan --dry-run
+## How access is represented
+
+```mermaid
+flowchart LR
+    DV[Dataverse effective Read authorization] -->|Impersonated reads and identity proof| P[Reader-specific projections]
+    P --> G[Immutable typed generation]
+    G --> D[Private Delta serving tables]
+    D --> R[Combined reader RLS and column policy]
+    R --> F[Qualified Fabric consumer paths]
+    W[Independent expiry watchdog] -->|Withdraw timed expired roles| R
 ```
 
-Diffs the compiled roles against what is on the item and writes `plan.json`.
-`--dry-run` additionally sends the payload to Fabric with `dryRun=true`, which
-validates it server-side without changing anything — the cheapest way to prove
-your credentials and payload are good.
+Each row carries `__pw_reader` and `__pw_generation`. A role per reader per shard filters those values and exposes selected business columns. POA and record-specific field sharing are demonstrated by comparing resulting rows and field values with Dataverse, rather than by one displayed Fabric rule per source grant. Readable role names summarize reader, role and BU context; they label cumulative access rather than copy Dataverse business roles one for one.
 
-### Writing to Fabric
+The source operator needs impersonation and sufficient table/field access. FetchXML proof requires the necessary reader `systemuser` access. Readers without it can use the optional [signed Dataverse `pw_ReadContext` plug-in](docs/READ-CONTEXT-PLUGIN.md), with an independently reviewed assembly SHA-256 and qualification of the installed function. Do not grant broad reader roles just to make identity proof succeed.
 
-```bash
-dvaccess apply --yes
+## Capacity and operational boundaries
+
+- The planner accepts **up to 1,000 configured readers**. This is an input/sharding limit, not a production throughput guarantee. The default quota is 250 roles with 10 reserved, yielding 240 readers per audience shard. Table shards multiply the lakehouse count.
+- Use a quota above 250 only with a target-specific Microsoft exception and live validation. Onboarding records the reference; it cannot independently verify it.
+- Only explicitly selected supported scalar fields are projected. Unsupported complex, file, image and party-list fields fail closed. Lookups use Web API properties such as `_primarycontactid_value`.
+- Refresh performs complete selected reader/table scans. It does **not** implement Dataverse security CDC or a generic delta feed. Measure extraction, publication and engine propagation with representative load before choosing a schedule or capacity SKU.
+- Timed retention is the onboarding default. Manual retention persists until withdrawal/replacement but does not waive prepared-data freshness checks. Static OneLake roles do not expire themselves; API outages prevent the watchdog from guaranteeing a hard 60-minute revocation deadline.
+- Fully unattended publication needs an external current boundary inspector for SQL mode, inherited access and alternate paths. This release consumes its assertion; it does not implement that inspector. Controlled publication and scheduled preparation are available.
+- Consumers need base item Read and the intended native policies. Broad workspace, raw storage, item or delegated SQL permissions can bypass isolation. SQL User's identity mode, owner support, propagation, actual consumer sign-ins and revocations need separate checks on every enabled path.
+- Discovery binds the expected account. Runtime Azure CLI credentials are tenant-bound; use an isolated CLI cache and recheck the active operator before operations. A plan's operator name is an observation, not a runtime account restriction.
+
+## Documentation and verification
+
+- [Client onboarding](docs/CLIENT-ONBOARDING.md) and [inputs/accounts/environment variables](docs/CLIENT-INPUTS.md)
+- [Operator commands, deployment and recovery](docs/ADAPTER-OPERATIONS.md)
+- [Security invariants and qualification gates](docs/ADAPTER-SECURITY.md)
+- [Actual-reader acceptance and POA/POAA comparison](docs/LIVE-ACCEPTANCE.md)
+- [Dataverse identity plug-in](docs/READ-CONTEXT-PLUGIN.md)
+- [Readable native role names](docs/READABLE-ROLES-AND-DIVERSITY.md)
+- [Retention behavior](docs/MANUAL-RETENTION.md)
+- [Watchdog container and Azure deployment](deploy/README.md)
+
+Run offline tests with the virtual-environment Python and `-m pytest -q`. Tests cover identity binding, source failures, projections, policy planning, lifecycle, publication, onboarding and release isolation. The C# plug-in has separate tests. Mocked inventories and offline tests do not replace client cloud qualification.
+
+For a workspace containing private deployment data or research artifacts, export the reviewed product files before creating a source release:
+
+```text
+python scripts/build_release.py --output-directory dist/client-release --source-directory dist/client-source
 ```
 
-Creates or reconciles the Entra groups, then replaces the item's role set. The
-`--yes` flag is mandatory; without it the command refuses. It verifies
-automatically afterwards.
-
-```bash
-dvaccess verify
-```
-
-Re-reads the item and confirms it still matches the compiled state. Useful as a
-scheduled drift check.
-
-### Auditing a single user
-
-```bash
-dvaccess explain --user someone@contoso.com
-```
-
-Prints every role instance granting that user access, which table each grant
-covers, at what depth, and whether it arrived directly or through a team —
-followed by their resulting OneLake scopes. This is how you answer "why can this
-person see this table?"
-
-### End to end
-
-```bash
-dvaccess run
-```
-
-Runs extract → compile → plan. Add `--yes` to apply as well.
-
-Each stage is idempotent: re-running `plan` after a successful `apply` reports no
-changes. Use `--run <run_id>` to re-compile against an older snapshot.
-
-## What you get out: run artifacts
-
-Every run writes an audit trail to `runs/<run_id>/`:
-
-| File | Contents |
-| --- | --- |
-| `snapshot.sqlite` | The raw Dataverse security model, point-in-time |
-| `compile_summary.md` / `.json` | Headline numbers and every exclusion |
-| `manifest.json` | Profile → members → per-table scope. Answers "why does user X see table Y" |
-| `profiles.csv` | One row per profile: members, tables, RLS tables, roles emitted |
-| `basic_depth_exclusions.csv` | Every (user, table) where Basic depth was fail-closed excluded |
-| `skipped_users.csv` | Every user excluded, with the reason |
-| `plan.json` | Roles to create, update, retire, and leave alone |
-| `desired_roles.json` | The exact payload that would be sent to Fabric |
-
-> `runs/` is gitignored. Snapshots contain the full user directory of your
-> environment — names, Entra object ids, business units, role assignments. Treat
-> them as sensitive and keep them out of source control.
-
-## Will it fit the role budget?
-
-Role count is governed by `distinct job-access patterns × distinct business-unit
-scopes` — **not** by user count. Measured with `tools/scale_benchmark.py` on
-synthetic data at 15,000 users and 2,000 tables:
-
-| Job archetypes | Business units | Roles compiled | Against a 1,000 budget |
-| ---: | ---: | ---: | :--- |
-| 5 | 90 | 465 | fits |
-| 10 | 90 | 930 | fits |
-| 20 | 90 | 1,859 | exceeds |
-| 40 | 90 | 3,634 | exceeds |
-| 40 | 12 | 480 | fits |
-
-Users are effectively free — 15,000 of them sharing 10 access patterns produce 10
-profiles. **Business-unit granularity is the expensive dimension.**
-
-Run the benchmark against your own assumptions:
-
-```bash
-python tools/scale_benchmark.py --archetypes 20 --business-units 90 --sweep
-```
-
-If your real numbers exceed the budget, the levers in order of leverage are:
-coarsen business-unit scoping (the biggest by far), shard across multiple Fabric
-items since the limit is **per item**, narrow the synced table set, or request a
-further limit increase. See [docs/design.md](docs/design.md) for the full
-discussion.
-
-## Replacing an existing Policy Weaver deployment
-
-If the item already carries roles from Microsoft's
-[Policy Weaver](https://github.com/microsoft/Policy-Weaver), set:
-
-```yaml
-apply:
-  retire_role_patterns: ["*PWPolicy"]
-```
-
-Those roles are then deleted on apply so this tool is the single source of truth.
-Every retirement is listed by name in `plan.json` for review first. Roles carrying
-your own `role_prefix` are never matched by these patterns, and anything else on
-the item — `DefaultReader`, hand-authored roles — is passed through untouched.
-
-Leaving both sets live is not recommended: OneLake unions grants across roles, so
-users would receive the more permissive of the two models.
-
-## Troubleshooting
-
-**`CredentialUnavailableError: This credential doesn't support claims challenges`**
-Your tenant issued a Continuous Access Evaluation challenge. Either run the
-`az login --claims-challenge ...` command printed in the error, or switch to a
-service principal, which answers challenges automatically. This is the single most
-likely failure for long production extracts.
-
-**`RequestBodyValidationFailed: Role has invalid name`**
-OneLake role names must start with a letter and contain only letters and numbers.
-No underscores, hyphens, or dots. One bad name rejects the entire payload. Check
-`fabric.role_prefix` — the config validator enforces this at load time.
-
-**Roles apply successfully but users see no data**
-Almost always `fabric.schema_name`. A schema-enabled item needs
-`/Tables/<schema>/<table>` paths; a non-schema item needs `/Tables/<table>`. The
-wrong setting produces valid roles whose paths match nothing.
-
-**`Server disconnected without sending a response`**
-The Dataverse Web API drops keep-alive connections on long extracts. This is
-retried automatically; no action needed.
-
-**Permissions reference tables that are not in the lakehouse**
-Set `fabric.restrict_to_item_tables: true` (the default) so compilation is
-intersected against the item's actual OneLake `Tables/` listing. Dataverse grants
-privileges on every table in the environment; only the synced subset exists.
-
-**Changes applied but access has not changed yet**
-OneLake takes about 5 minutes to apply role definition changes, and up to about an
-hour to reflect Entra group membership changes. Some engines cache for an
-additional hour.
-
-## Guarantees, limitations, and residual gaps
-
-**Guarantees**
-
-- Access granted in Fabric is always a **subset** of access in Dataverse. Every
-  gap is reported, never silently widened.
-- Only roles carrying the configured prefix are created, updated, or deleted.
-  Everything else on the item is preserved byte-for-byte.
-- Runs are idempotent and concurrency-safe (ETag `If-Match`, with one refetch and
-  retry on conflict).
-
-**Not modeled** — documented rather than approximated:
-
-- Record sharing (`PrincipalObjectAccess`) and access teams
-- Hierarchy and position-based security
-- Per-user record ownership (Basic depth on user/team-owned tables) — excluded
-  and reported
-- Column-level security from field security profiles — extracted and folded into
-  profile identity, but not yet emitted (`compile.cls_enabled` refuses until
-  implemented)
-
-**Design detail** lives in [docs/design.md](docs/design.md).
+The builder refuses existing targets and exports source manifests and hashes. Its allowlist excludes live configuration, state, inventories, reports, credential caches and demo-only scripts. Review the clean source before committing or pushing. Git ignore rules are a convenience, not a substitute for reviewing a Git diff.

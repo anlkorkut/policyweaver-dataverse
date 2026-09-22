@@ -1,0 +1,4 @@
+interface:
+  display_name: "Policy Weaver Dataverse"
+  short_description: "Onboard and operate Dataverse read security in Fabric"
+  default_prompt: "Use $policyweaver-dataverse to discover my client's Dataverse and Fabric inputs, prepare a validated deployment configuration, and run within the agreed scope."

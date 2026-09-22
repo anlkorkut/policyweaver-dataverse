@@ -1,0 +1,4 @@
+interface:
+  display_name: "Policy Weaver Dataverse"
+  short_description: "Set up and qualify Dataverse read access in Fabric"
+  default_prompt: "Use $policyweaver-dataverse to onboard this repository into my Dataverse and Fabric environment."

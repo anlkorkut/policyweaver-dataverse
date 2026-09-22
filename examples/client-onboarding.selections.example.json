@@ -1,0 +1,16 @@
+{
+  "deployment_name": null,
+  "identity_api_assembly_sha256": null,
+  "identity_api_name": "pw_ReadContext",
+  "identity_verification": "fetchxml",
+  "quota_exception_reference": null,
+  "reader_entra_ids": [],
+  "required_access_paths": [],
+  "reserved_roles": 10,
+  "retention_mode": "timed",
+  "role_limit": 250,
+  "schema_version": 1,
+  "tables": [],
+  "tables_per_shard": 100,
+  "workspace_id": null
+}

@@ -1,0 +1,24 @@
+# Allowlist the build context. Never upload tenant evidence, configuration,
+# source records, local credentials, virtual environments, or journal state.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!requirements.lock
+!policyweaver/
+!policyweaver/*.py
+!policyweaver/static/
+!policyweaver/static/*.html
+!policyweaver/static/*.css
+!policyweaver/static/*.js
+policyweaver/**/__pycache__/
+policyweaver/**/*.pyc
+policyweaver/**/*.pyo
+policyweaver/**/.env*
+policyweaver/**/*.pem
+policyweaver/**/*.key
+policyweaver/**/*.snk
+policyweaver/**/*.dll
+policyweaver/**/*.pfx
+policyweaver/**/*.p12
+policyweaver/**/.policyweaver/

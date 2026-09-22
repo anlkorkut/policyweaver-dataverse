@@ -1,0 +1,11 @@
+{
+  "environment_id": null,
+  "environment_url": null,
+  "operator_entra_id": null,
+  "operator_upn": null,
+  "reader_upns": [],
+  "schema_version": 1,
+  "tables": [],
+  "tenant_id": null,
+  "workspace_id": null
+}
