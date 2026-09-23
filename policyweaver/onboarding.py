@@ -356,16 +356,19 @@ def create_configuration(request: OnboardingRequest, inventory: dict,
         identity_api_name=selections.identity_api_name, identity_api_assembly_sha256=selections.identity_api_assembly_sha256,
         readers=selections.reader_entra_ids, discover_readers=False, excluded_readers=(), max_readers=1000,
         tables=tuple(output_tables), role_limit=selections.role_limit, reserved_roles=selections.reserved_roles,
-        tables_per_shard=selections.tables_per_shard, serving_items={}, role_naming="readable",
+        tables_per_shard=selections.tables_per_shard, serving_items={}, role_naming="user_business_role",
         source_workers=1, retention_mode=selections.retention_mode, state_directory="state")
     # Reuse native planner validation for destination names, policy limits and
     # shards. Configuration validation alone only validates source identifiers.
+    # This is structural sizing only: source labels and actual reader policies
+    # are acquired later by prepare using the configured naming mode.
     from .fabric_native import TableSpec, plan_roles, NativePolicyError
     try:
         native_plan = plan_roles(config.tenant_id,
             [TableSpec(f"/Tables/dbo/{config.deployment_name}_{t.name}", t.columns) for t in config.tables],
             config.readers, 1, role_limit=config.role_limit, reserve_roles=config.reserved_roles,
-            max_table_permissions=config.tables_per_shard, ownership_prefix=config.role_prefix)
+            max_table_permissions=config.tables_per_shard, ownership_prefix=config.role_prefix,
+            role_naming="legacy")
     except (ValueError, NativePolicyError):
         raise OnboardingError("native_policy_plan_invalid_check_destination_names_and_limits") from None
     audience_shards = math.ceil(len(config.readers) / (config.role_limit - config.reserved_roles))
@@ -402,7 +405,7 @@ def create_configuration(request: OnboardingRequest, inventory: dict,
             "required_lakehouses": len(items), "planned_items": items, "role_limit": config.role_limit,
             "reserved_roles": config.reserved_roles, "quota_exception_reference": selections.quota_exception_reference,
             "quota_verified_live": False, "throughput_estimate_available": False},
-        "retention_mode": config.retention_mode, "remote_changes": False,
+        "retention_mode": config.retention_mode, "role_naming": config.role_naming, "remote_changes": False,
         "boundary_verified": False, "source_permissions_verified": False, "production_certified": False,
         "native_expiry_self_enforcing": False,
         "remaining_gates": ["Verify operator impersonation, data/field access and reader identity proof.",
@@ -416,7 +419,8 @@ def create_configuration(request: OnboardingRequest, inventory: dict,
             "Measure refresh, publication, propagation and revocation under the client's load and outages."],
         "operating_limits": ["Discovery is metadata, not an authorization or permission attestation.",
             "Current preparation performs complete selected reader/table scans, not Dataverse security CDC.",
-            "Readable role names summarize cumulative grants; they do not copy Dataverse roles one for one.",
+            "New configurations use user_business_role names: username, home business unit and one source role label; all cumulative grants remain effective.",
+            "Use matching publisher and independent watchdog version 0.3.1 before publishing these names; older watchdogs do not recognize their ownership annotation.",
             "Manual retention requires explicit operations for revocation; static OneLake roles never self-expire.",
             "Timed watchdog withdrawal depends on API availability and does not guarantee a hard 60-minute outage bound.",
             "Fully unattended publication needs a fresh external boundary inspector; this release does not implement one.",
@@ -440,6 +444,21 @@ Discovery binds the expected UPN/OID, but runtime Azure CLI credentials are only
 tenant-bound. Use an isolated AZURE_CONFIG_DIR and verify the active operator
 account before each operation; plan.operator is an audit observation, not a
 runtime account restriction.
+
+New configurations default to role_naming=user_business_role. Visible names contain
+the username, home business unit and one source role title, compacted to Fabric's
+alphanumeric format. Recognizable privilege action words are omitted from the role
+title. The name is a label: all direct/team roles and cumulative grants still apply.
+Changing the naming mode requires a fresh preparation, never edited manifests.
+
+Before publishing, install matching reviewed publisher and independent watchdog
+version 0.3.1 on both hosts (or a later jointly qualified release). Earlier watchdogs
+cannot recognize ownership of these simple-named policies. Check the installed
+version using each host's actual service Python environment:
+
+```text
+python -c "import policyweaver; print(policyweaver.__version__)"
+```
 
 ```text
 python -m policyweaver.onboarding validate --config policyweaver.config.json

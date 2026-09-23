@@ -296,8 +296,9 @@ def test_real_delta_prepare_200_readers_two_tables_and_typed_nulls(tmp_path):
     assert "SOURCE_PII_SENTINEL" not in (directory / "manifest.json").read_text()
 
 
-def test_readable_role_labels_are_persisted_and_replayed_without_changing_entitlements(tmp_path):
-    runtime, source, _, _ = harness(tmp_path, role_naming="readable")
+@pytest.mark.parametrize("role_naming", ["readable", "user_business_role"])
+def test_labelled_roles_are_persisted_and_replayed_without_changing_entitlements(tmp_path, role_naming):
+    runtime, source, _, _ = harness(tmp_path, role_naming=role_naming)
     first, second = source.readers
     source.denied.add((second.entra_id, "contact"))
     labels = {r.entra_id: {
@@ -322,12 +323,15 @@ def test_readable_role_labels_are_persisted_and_replayed_without_changing_entitl
     run = runtime.prepare()
     _, directory, manifest, plan = runtime.prepared(run["generation"])
     assert calls == [source.readers]
-    assert manifest["role_naming"] == "readable" and manifest["reader_labels"] == labels
+    assert manifest["role_naming"] == role_naming and manifest["reader_labels"] == labels
     assert manifest["table_access"][first.entra_id] == ["account", "contact"]
     assert manifest["table_access"][second.entra_id] == ["account"]
     assert manifest["total_rows"] == 3
     assert [len(s.roles) for s in plan.shards] == [2, 1]
     assert all("BNYMContactOwnerRole" in r["name"] for s in plan.shards for r in s.roles)
+    if role_naming == "user_business_role":
+        assert all(r["name"].startswith("pwtest") and not r["name"].startswith("PW")
+                   for s in plan.shards for r in s.roles)
     assert verify_generation(directory)["reader_labels"] == labels
     # Replanning depends exclusively on hash-bound manifest evidence, not live labels.
     source.reader_role_labels = lambda *_args, **_kwargs: pytest.fail("Prepared replay cannot discover new labels")
@@ -335,8 +339,9 @@ def test_readable_role_labels_are_persisted_and_replayed_without_changing_entitl
     assert "BNYM" not in json.dumps(events) and "pwtest" not in json.dumps(events)
 
 
-def test_readable_label_failure_never_prepares_or_publishes_partial_projection(tmp_path):
-    runtime, source, destination, fabric = harness(tmp_path, role_naming="readable")
+@pytest.mark.parametrize("role_naming", ["readable", "user_business_role"])
+def test_label_failure_never_prepares_or_publishes_partial_projection(tmp_path, role_naming):
+    runtime, source, destination, fabric = harness(tmp_path, role_naming=role_naming)
     def fail(*_args, **_kwargs):
         raise SourceProjectionError("label_http_error", "A label endpoint failed.")
     source.reader_role_labels = fail
@@ -348,6 +353,64 @@ def test_readable_label_failure_never_prepares_or_publishes_partial_projection(t
         row = db.execute("SELECT status,error_code FROM runs").fetchone()
     assert tuple(row) == ("failed", "label_http_error")
     assert not list((runtime.directory / "generations").glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize("old_mode,new_mode", [
+    ("legacy", "user_business_role"), ("readable", "user_business_role"),
+    ("user_business_role", "readable"), ("user_business_role", "legacy"),
+])
+def test_naming_mode_change_requires_a_fresh_generation(tmp_path, old_mode, new_mode):
+    runtime, source, destination, fabric = harness(tmp_path, role_naming=old_mode)
+    source.reader_role_labels = lambda readers, **_: _simple_reader_labels(readers)
+    run = runtime.prepare()
+    changed = runtime.config.model_copy(update={"role_naming": new_mode})
+    save_config(changed, runtime.config_path)
+    with pytest.raises(RuntimeErrorSafe, match="configuration_changed_restart_worker"):
+        runtime.prepared(run["generation"])
+    with AdapterRuntime(runtime.config_path, credential=object(), source_factory=lambda *_, **__: source,
+                        fabric_factory=fabric.factory, destination=destination) as restarted:
+        with pytest.raises(RuntimeErrorSafe, match="generation_not_prepared_or_configuration_changed"):
+            restarted.prepared(run["generation"])
+        fresh = restarted.prepare()
+        assert fresh["generation"] != run["generation"]
+        assert restarted.prepared(fresh["generation"])[2].get("role_naming", "legacy") == new_mode
+    assert not fabric.calls and not destination.commits
+
+
+def _simple_reader_labels(readers):
+    return {reader.entra_id: {
+        "dataverse_id": reader.dataverse_id, "entra_id": reader.entra_id,
+        "alias": f"reader{i:03d}", "display_name": f"Reader {i}",
+        "business_unit": {"id": uid(1000), "name": "Client BU"},
+        "effective_roles": [{"role_id": uid(2001), "root_role_id": uid(2000),
+            "name": "Client Role", "business_unit": {"id": uid(1000), "name": "Client BU"},
+            "origins": [{"kind": "direct", "principal_id": reader.dataverse_id}]}],
+        "teams": [],
+    } for i, reader in enumerate(readers, 1)}
+
+
+@pytest.mark.parametrize("configured_mode,recorded_mode", [
+    ("readable", "user_business_role"), ("user_business_role", "readable"),
+    ("user_business_role", "legacy"), ("user_business_role", None),
+])
+def test_prepared_labelled_mode_mismatch_is_rejected_even_with_rebound_manifest_hash(
+        tmp_path, configured_mode, recorded_mode):
+    runtime, source, destination, fabric = harness(tmp_path, role_naming=configured_mode)
+    source.reader_role_labels = lambda readers, **_: _simple_reader_labels(readers)
+    run = runtime.prepare()
+    path = runtime.directory / "generations" / str(run["generation"]) / "manifest.json"
+    manifest = json.loads(path.read_text())
+    if recorded_mode is None:
+        manifest.pop("role_naming")
+    else:
+        manifest["role_naming"] = recorded_mode
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    summary = {**run["summary"], "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    with runtime.journal.connect() as db:
+        db.execute("UPDATE runs SET summary=? WHERE generation=?", (json.dumps(summary), run["generation"]))
+    with pytest.raises(RuntimeErrorSafe, match="generation_role_naming_mismatch"):
+        runtime.prepared(run["generation"])
+    assert not fabric.calls and not destination.commits
 
 
 def test_legacy_naming_does_not_request_new_source_metadata(tmp_path):

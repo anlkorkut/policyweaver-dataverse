@@ -345,13 +345,27 @@ def test_mocked_discovery_to_client_configuration_matches_actual_runtime_plan():
         reader_entra_ids=[gid(103)], tables=[{"name": "account", "columns": ["name", "ownerid"]}],
         required_access_paths=["onelake", "sql"])
     config, review = create_configuration(request, inventory, selections)
-    actual_plan = role_plan(config, config.tables, config.readers, generation=1)
+    # Actual preparation obtains these labels from the source after its reader
+    # scans. Discovery metadata is not a substitute for role provenance.
+    source_labels = {gid(103): {
+        "entra_id": gid(103), "dataverse_id": gid(3), "alias": "reader", "display_name": "Example Reader",
+        "business_unit": {"id": gid(11), "name": "Custody East"},
+        "effective_roles": [{"role_id": gid(50), "root_role_id": gid(51), "name": "Client Account Owner",
+            "business_unit": {"id": gid(11), "name": "Custody East"},
+            "origins": [{"kind": "direct", "principal_id": gid(3)}]}], "teams": [],
+    }}
+    actual_plan = role_plan(config, config.tables, config.readers, generation=1,
+        table_access={gid(103): ["account"]}, reader_labels=source_labels)
 
     assert config.tenant_id == gid(1) and config.organization_id == gid(10)
     assert config.workspace_id == gid(30) and config.readers == (gid(103),)
     assert config.serving_items == {} and config.discover_readers is False
     assert config.tables[0].columns == ("accountid", "name", "_ownerid_value")
-    assert config.state_directory == "state" and config.role_naming == "readable"
+    assert config.state_directory == "state" and config.role_naming == "user_business_role"
+    assert actual_plan.shards[0].role_naming == config.role_naming
+    assert actual_plan.shards[0].roles[0]["name"] == "readerCustodyEastClientAccountOwner"
+    assert actual_plan.shards[0].roles[0]["decisionRules"][0]["constraints"]["columns"][0]["columnNames"] == [
+        "accountid", "name", "_ownerid_value"]
     assert review["capacity_plan"]["required_lakehouses"] == len(actual_plan.shards)
     assert [i["shard"] for i in review["capacity_plan"]["planned_items"]] == [s.key for s in actual_plan.shards]
     assert review["remote_changes"] is False and review["boundary_verified"] is False

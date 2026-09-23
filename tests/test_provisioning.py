@@ -97,10 +97,10 @@ class FakeFabric:
         self.roles = copy.deepcopy(payload["value"])
 
 
-def runtime(tmp_path):
+def runtime(tmp_path, *, role_naming="legacy"):
     config = AdapterConfig(environment_url="https://example.crm.dynamics.com", tenant_id=TENANT,
         organization_id=ORG, workspace_id=WORKSPACE, readers=(READER,),
-        tables=(TableSelection(name="account", columns=("accountid", "name")),))
+        tables=(TableSelection(name="account", columns=("accountid", "name")),), role_naming=role_naming)
     config_path = tmp_path / "deployment.json"
     save_config(config, config_path)
     fabric = FakeFabric()
@@ -115,12 +115,14 @@ def factory(client):
     return lambda *args: client
 
 
-def test_provision_creates_only_isolated_item_persists_receipt_then_hardens_and_types(tmp_path):
-    rt, api = runtime(tmp_path), FakeClient()
+@pytest.mark.parametrize("role_naming", ["legacy", "readable", "user_business_role"])
+def test_provision_creates_only_isolated_item_persists_receipt_then_hardens_and_types(tmp_path, role_naming):
+    rt, api = runtime(tmp_path, role_naming=role_naming), FakeClient()
     seen = []
     def ensure(destination, item, path, table):
         assert (rt.directory / "provisioning.json").exists()
         assert load_config(rt.config_path).serving_items == {"a000_t000": ITEM}
+        assert load_config(rt.config_path).role_naming == role_naming
         assert not rt.fabric_mock.roles
         seen.append((item, path))
         return {"path": path, "created_empty": True}
@@ -131,6 +133,9 @@ def test_provision_creates_only_isolated_item_persists_receipt_then_hardens_and_
     assert rt.fabric_mock.puts == [{"value": []}]
     assert seen == [(ITEM, "/Tables/dbo/pw_demo_account")]
     assert result["remaining_actions"]
+    # A sizing plan neither requests labels nor changes the configured naming
+    # mode; actual reader roles must come from a fresh prepared generation.
+    assert rt.config.role_naming == role_naming
 
 
 def test_existing_name_without_receipt_is_never_adopted_or_modified(tmp_path):

@@ -83,12 +83,19 @@ def test_retention_mode_does_not_expand_source_freshness_budget(retention_mode):
                       generation_lifetime_seconds=3000, publication_budget_seconds=1200)
 
 
-def test_readable_role_names_are_opt_in_and_bound_into_fingerprint():
+def test_labelled_role_names_are_opt_in_and_bound_into_fingerprint():
     legacy = AdapterConfig(**base())
     assert legacy.role_naming == "legacy"
     assert AdapterConfig(**base(), role_naming="legacy").fingerprint == legacy.fingerprint
     readable = AdapterConfig(**base(), role_naming="readable")
     assert readable.fingerprint != legacy.fingerprint
+    simple = AdapterConfig(**base(), role_naming="user_business_role")
+    assert simple.fingerprint not in {legacy.fingerprint, readable.fingerprint}
+    # Adding the mode cannot invalidate pre-existing readable generations.
+    readable_payload = readable.model_dump(mode="json")
+    readable_payload.pop("retention_mode")
+    readable_payload.pop("source_workers")
+    assert readable.fingerprint == hashlib.sha256(json.dumps(readable_payload, sort_keys=True).encode()).hexdigest()
     for invalid in ("friendly", "", None, True):
         with pytest.raises(ValidationError):
             AdapterConfig(**base(), role_naming=invalid)

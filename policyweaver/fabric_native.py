@@ -111,12 +111,50 @@ def _role_namespace(prefix: str) -> str:
     return "PW" + hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:16]
 
 
-def _reader_role_name(prefix: str, reader: str, label: ReaderRoleLabel | None = None) -> str:
+def _naming_mode(role_naming: str | None, has_labels: bool) -> str:
+    mode = ("readable" if has_labels else "legacy") if role_naming is None else role_naming
+    if mode not in {"legacy", "readable", "user_business_role"}:
+        raise NativePolicyError("Unsupported role naming mode")
+    if (mode != "legacy") != has_labels:
+        raise NativePolicyError("Role naming mode and reader labels must agree")
+    return mode
+
+
+def _policy_owner_marker(tenant: str, prefix: str) -> str:
+    """Versioned namespace annotation, not a secret or an authorization grant.
+
+    It is deliberately not a GUID. With the simultaneous reader GUID equality,
+    the extra string inequality is true for every authorized reader row. This
+    keeps machine ownership outside the human role name without a new column.
+    """
+    _role_namespace(prefix)  # Validate the namespace with the same legacy rules.
+    return "PolicyWeaverOwnerV1" + _hash({"tenant_id": _guid(tenant, "policy tenant"),
+                                        "ownership_prefix": prefix})
+
+
+def _row_predicate(table: "TableSpec", reader: str, generation: int, tenant: str,
+                   prefix: str, role_naming: str = "legacy") -> str:
+    marker = (f"AND __pw_reader <> '{_policy_owner_marker(tenant, prefix)}' "
+              if role_naming == "user_business_role" else "")
+    predicate = (f"SELECT * FROM {table.sql_name} WHERE __pw_reader = '{reader}' "
+                 f"{marker}AND __pw_generation = {generation}")
+    if len(predicate) > 1000:
+        raise NativePolicyError("OneLake predicate exceeds 1000 characters")
+    return predicate
+
+
+def _reader_role_name(prefix: str, reader: str, label: ReaderRoleLabel | None = None,
+                      role_naming: str | None = None) -> str:
+    mode = _naming_mode(role_naming, label is not None)
     namespace = _role_namespace(prefix)
     suffix = "R" + _guid(reader, "role reader").replace("-", "")
-    if label is None:
+    if mode == "legacy":
         return namespace + suffix
-    name = "PW" + label.readable_token() + "N" + namespace[2:] + suffix
+    try:
+        name = (label.user_business_role_token() if mode == "user_business_role" else
+                "PW" + label.readable_token() + "N" + namespace[2:] + suffix)
+    except ValueError as exc:
+        raise NativePolicyError("Username, business unit and role must yield usable Fabric labels") from exc
     if len(name) > MAX_ROLE_NAME_LENGTH or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name):
         raise NativePolicyError("Readable role name violates the supported Fabric name limits")
     return name
@@ -194,6 +232,7 @@ class RoleShard:
     reserve_roles: int
     reader_table_paths: tuple[tuple[str, tuple[str, ...]], ...] | None = None
     reader_role_labels: tuple[tuple[str, ReaderRoleLabel], ...] | None = None
+    role_naming: str | None = None
 
     def __post_init__(self) -> None:
         if self.tenant_id != _guid(self.tenant_id, "shard tenant"):
@@ -224,6 +263,17 @@ class RoleShard:
             if (len(labels) != len(self.reader_role_labels) or set(labels) != set(self.reader_ids)
                     or any(not isinstance(value, ReaderRoleLabel) for value in labels.values())):
                 raise NativePolicyError("role labels must cover exactly the shard readers")
+        mode = _naming_mode(self.role_naming, self.reader_role_labels is not None)
+        if mode == "user_business_role":
+            if any(not re.fullmatch(r"/Tables/dbo/" + re.escape(self.ownership_prefix) +
+                                    r"[a-z][a-z0-9_]{0,99}", t.path) for t in self.tables):
+                raise NativePolicyError("Simple-named policies require canonical deployment-owned table paths")
+            access = dict(self.reader_table_paths) if self.reader_table_paths is not None else None
+            names = [_reader_role_name(self.ownership_prefix, reader, label, mode).casefold()
+                     for reader, label in self.reader_role_labels
+                     if access is None or access[reader]]
+            if len(names) != len(set(names)):
+                raise NativePolicyError("Readable role names collide after normalization or truncation; choose distinct source labels")
 
     @property
     def roles(self) -> list[dict[str, Any]]:
@@ -235,7 +285,7 @@ class RoleShard:
             tables = self.tables if access is None else tuple(t for t in self.tables if t.path in access[reader])
             if tables:
                 roles.append(_reader_role(self.tenant_id, reader, tables, self.generation,
-                                          self.ownership_prefix, labels.get(reader)))
+                                          self.ownership_prefix, labels.get(reader), self.role_naming))
         return roles
 
     @property
@@ -245,7 +295,7 @@ class RoleShard:
     @property
     def role_name_map(self) -> list[dict[str, Any]]:
         access = dict(self.reader_table_paths) if self.reader_table_paths is not None else None
-        return [{"entra_id": reader, "role_name": _reader_role_name(self.ownership_prefix, reader, label),
+        return [{"entra_id": reader, "role_name": _reader_role_name(self.ownership_prefix, reader, label, self.role_naming),
                  **label.audit()} for reader, label in self.reader_role_labels or ()
                 if access is None or access[reader]]
 
@@ -279,15 +329,14 @@ class RolePlan:
 
 
 def _reader_role(tenant: str, reader: str, tables: tuple[TableSpec, ...],
-                 generation: int, prefix: str, label: ReaderRoleLabel | None = None) -> dict[str, Any]:
+                 generation: int, prefix: str, label: ReaderRoleLabel | None = None,
+                 role_naming: str | None = None) -> dict[str, Any]:
     # Fabric accepts exactly one decision rule per role. Each permitted path
     # retains its own row predicate and explicit business-column allowlist.
+    mode = _naming_mode(role_naming, label is not None)
     paths, rows, columns = [], [], []
     for table in tables:
-        predicate = (f"SELECT * FROM {table.sql_name} WHERE __pw_reader = '{reader}' "
-                     f"AND __pw_generation = {generation}")
-        if len(predicate) > 1000:
-            raise NativePolicyError("OneLake predicate exceeds 1000 characters")
+        predicate = _row_predicate(table, reader, generation, tenant, prefix, mode)
         paths.append(table.path)
         rows.append({"tablePath": table.path, "value": predicate})
         columns.append({"tablePath": table.path, "columnNames": list(table.columns),
@@ -296,7 +345,7 @@ def _reader_role(tenant: str, reader: str, tables: tuple[TableSpec, ...],
             {"attributeName": "Path", "attributeValueIncludedIn": paths},
             {"attributeName": "Action", "attributeValueIncludedIn": ["Read"]}],
             "constraints": {"rows": rows, "columns": columns}}] if tables else []
-    return {"name": _reader_role_name(prefix, reader, label), "kind": "Policy",
+    return {"name": _reader_role_name(prefix, reader, label, mode), "kind": "Policy",
             "decisionRules": rules, "members": {"microsoftEntraMembers": [
                 {"tenantId": tenant, "objectId": reader, "objectType": "User"}]}}
 
@@ -307,7 +356,8 @@ def plan_roles(tenant_id: str, tables: Iterable[TableSpec | Mapping[str, Any]],
                max_table_permissions: int = 500,
                ownership_prefix: str = "PolicyWeaver_",
                reader_table_paths: Mapping[str, Iterable[str]] | None = None,
-               reader_labels: Mapping[str, Mapping[str, Any]] | None = None) -> RolePlan:
+               reader_labels: Mapping[str, Mapping[str, Any]] | None = None,
+               role_naming: str | None = None) -> RolePlan:
     """Partition readers and tables into independently secured lakehouse items.
 
     The default quota was verified in the supplied demo tenant. A 1000-role
@@ -386,7 +436,7 @@ def plan_roles(tenant_id: str, tables: Iterable[TableSpec | Mapping[str, Any]],
                              ownership_prefix, role_limit, reserve_roles,
                              None if table_access is None else tuple(
                                  (r, tuple(t.path for t in group if t.path in table_access[r])) for r in audience),
-                             None if labels is None else tuple((r, labels[r]) for r in audience))
+                             None if labels is None else tuple((r, labels[r]) for r in audience), role_naming)
                    for ai, audience in enumerate(audiences) for ti, group in enumerate(table_groups))
     return RolePlan(tenant, gen, len(ids), len(normalized_tables), len(audiences), len(table_groups), shards)
 
@@ -557,6 +607,66 @@ def _semantic_roles(roles: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                 if isinstance(row, dict) and row.get("type") == "Fabric":
                     row.pop("type")
     return sorted(cleaned, key=lambda r: r["name"])
+
+
+def _simple_role_owned(role: Mapping[str, Any], tenant: str, prefix: str) -> bool:
+    """Bind simple names to the canonical namespace annotation and reader.
+
+    Labels are never ownership evidence. A matching annotation in a damaged or
+    broader policy is an integrity error, not permission to adopt/delete it.
+    Mixed generation timestamps remain recognizable for watchdog withdrawal.
+    Only the two known Fabric GET annotations are normalized for comparison.
+    """
+    marker = _policy_owner_marker(tenant, prefix)
+    if marker not in json.dumps(role, sort_keys=True, ensure_ascii=True):
+        return False
+    try:
+        name = role.get("name")
+        if (not isinstance(name, str) or len(name) > MAX_ROLE_NAME_LENGTH
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name)):
+            raise ValueError("name")
+        members = role["members"]
+        if not isinstance(members, dict) or set(members) != {"microsoftEntraMembers"}:
+            raise ValueError("members")
+        identities = members["microsoftEntraMembers"]
+        if not isinstance(identities, list) or len(identities) != 1:
+            raise ValueError("members")
+        member = identities[0]
+        reader = _guid(member["objectId"], "owned reader")
+        if (member.get("objectType", "User") != "User"
+                or member["tenantId"] != tenant or member["objectId"] != reader):
+            raise ValueError("identity")
+        rules = role["decisionRules"]
+        if not isinstance(rules, list) or len(rules) != 1:
+            raise ValueError("rules")
+        constraints = rules[0]["constraints"]
+        rows, columns = constraints["rows"], constraints["columns"]
+        if (not isinstance(rows, list) or not rows or not isinstance(columns, list)
+                or len(rows) != len(columns) or len(rows) > 500):
+            raise ValueError("constraints")
+        tables, generations = [], []
+        for row, column in zip(rows, columns):
+            table = TableSpec(row["tablePath"], column["columnNames"])
+            if not re.fullmatch(r"/Tables/dbo/" + re.escape(prefix) + r"[a-z][a-z0-9_]{0,99}", table.path):
+                raise ValueError("scope")
+            match = re.search(r"\b__pw_generation = (-?[0-9]{1,19})$", row["value"])
+            if not match:
+                raise ValueError("generation")
+            tables.append(table)
+            generations.append(int(match[1]))
+        if len({t.path.lower() for t in tables}) != len(tables):
+            raise ValueError("duplicate paths")
+        expected = _reader_role(tenant, reader, tuple(tables), generations[0], prefix)
+        expected["name"] = name
+        expected["decisionRules"][0]["constraints"]["rows"] = [
+            {"tablePath": table.path, "value": _row_predicate(
+                table, reader, generation, tenant, prefix, "user_business_role")}
+            for table, generation in zip(tables, generations)]
+        if _semantic_roles([dict(role)]) != _semantic_roles([expected]):
+            raise ValueError("noncanonical policy")
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
+        raise NativePolicyError("Marked role has an unrecognized identity, scope or policy; refusing mutation") from exc
+    return True
 
 
 class FabricNativeClient:
@@ -777,6 +887,8 @@ class FabricNativeClient:
         raise NativePolicyError("Workspace-role pagination bound exceeded")
 
     def _owned(self, role: Mapping[str, Any], prefix: str) -> bool:
+        if _simple_role_owned(role, self.tenant_id, prefix):
+            return True
         name = role.get("name", "")
         reader_hex = _owned_role_reader(name, prefix)
         if reader_hex is None:
@@ -810,6 +922,8 @@ class FabricNativeClient:
         if _bypass_roles(unowned, shard):
             raise NativePolicyError("Unmanaged overlapping roles may bypass reader RLS/CLS; review or isolate the serving item")
         planned = shard.roles
+        if {r["name"].casefold() for r in unowned} & {r["name"].casefold() for r in planned}:
+            raise NativePolicyError("Planned role name collides with an unmanaged role; refusing replacement")
         existing_generations = set()
         for old in previous.values():
             rules = old.get("decisionRules")

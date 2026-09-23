@@ -63,9 +63,10 @@ class AdapterConfig(Settings):
     # Retention controls automatic withdrawal after publication, never the
     # finite source freshness or publication-reserve checks.
     retention_mode: Literal["timed", "manual"] = "timed"
-    # Readable names are annotations over the same reader-scoped policy. They
-    # require a fresh generation with complete source label provenance.
-    role_naming: Literal["legacy", "readable"] = "legacy"
+    # Source-labelled names are annotations over the same reader-scoped policy.
+    # Both labelled modes require a fresh generation with complete provenance.
+    # Keep legacy as the compatibility default for existing configurations.
+    role_naming: Literal["legacy", "readable", "user_business_role"] = "legacy"
     source_workers: int = Field(default=1, ge=1, le=4, strict=True)
     generation_lifetime_seconds: int = Field(default=2700, ge=60, le=3000)
     publication_budget_seconds: int = Field(default=600, ge=60, le=1200)

@@ -50,7 +50,7 @@ def role_plan(config, tables, readers, generation, table_access=None, reader_lab
                       [TableSpec(f"/Tables/dbo/{config.deployment_name}_{t.name}", tuple(t.columns)) for t in tables],
                       readers, generation, role_limit=config.role_limit, reserve_roles=config.reserved_roles,
                       max_table_permissions=config.tables_per_shard, ownership_prefix=config.role_prefix,
-                      reader_table_paths=allowed, reader_labels=reader_labels)
+                      reader_table_paths=allowed, reader_labels=reader_labels, role_naming=config.role_naming)
 
 
 class AdapterRuntime:
@@ -243,7 +243,7 @@ class AdapterRuntime:
                     # All producers are closed and joined before labels or a
                     # successful manifest can be emitted.
                     reader_labels = None
-                    if c.role_naming == "readable":
+                    if c.role_naming in {"readable", "user_business_role"}:
                         # Labels are collected after reader-context scans so JIT
                         # group membership observations are as recent as possible.
                         # Collection errors invalidate the whole generation;
@@ -261,7 +261,7 @@ class AdapterRuntime:
                         "readers": [asdict(r) for r in readers], "table_access": table_access, "source_metrics": progress_source.metrics,
                         **({"source_workers": c.source_workers} if c.source_workers > 1 else {}),
                         "shards": plan.as_dict(),
-                        **({"role_naming": "readable", "reader_labels": reader_labels} if reader_labels is not None else {})})
+                        **({"role_naming": c.role_naming, "reader_labels": reader_labels} if reader_labels is not None else {})})
                     self._check_time(run, reserve=c.publication_budget_seconds)
                 summary = {"reader_count": len(readers), "table_count": len(tables),
                            **retention_metadata(c.retention_mode, run["expires"], c.publication_budget_seconds),
@@ -301,8 +301,10 @@ class AdapterRuntime:
             if any(manifest.get(k, object()) != v or run["summary"].get(k, object()) != v
                    for k, v in expected_retention.items()):
                 raise RuntimeErrorSafe("generation_retention_metadata_mismatch")
-        if self.config.role_naming == "readable":
-            if manifest.get("role_naming") != "readable" or not isinstance(manifest.get("reader_labels"), dict):
+        if self.config.role_naming in {"readable", "user_business_role"}:
+            if manifest.get("role_naming") != self.config.role_naming:
+                raise RuntimeErrorSafe("generation_role_naming_mismatch")
+            if not isinstance(manifest.get("reader_labels"), dict):
                 raise RuntimeErrorSafe("generation_role_labels_missing")
         elif "reader_labels" in manifest or manifest.get("role_naming", "legacy") != "legacy":
             raise RuntimeErrorSafe("generation_role_naming_mismatch")

@@ -85,7 +85,8 @@ def test_new_client_is_explicit_private_unprovisioned_and_account_pin_not_overcl
     assert config.organization_id == gid(2)
     assert config.authentication == "azure_cli" and config.serving_items == {}
     assert config.readers == tuple(selections["reader_entra_ids"])
-    assert config.discover_readers is False and config.role_naming == "readable" and config.source_workers == 1
+    assert config.discover_readers is False and config.role_naming == "user_business_role" and config.source_workers == 1
+    assert plan["role_naming"] == "user_business_role"
     assert config.tables[0].columns == ("accountid", "name", "_ownerid_value")
     assert config.retention_mode == "timed" and config.state_directory == "state"
     assert plan["remote_changes"] is False and plan["boundary_verified"] is False
@@ -249,6 +250,12 @@ def test_cli_configure_writes_only_new_local_artifacts(tmp_path, capsys):
         "policyweaver.config.json", "deployment-plan.json", "NEXT-STEPS.md"}
     config_path = output / "policyweaver.config.json"
     config = load_config(config_path)
+    next_steps = (output / "NEXT-STEPS.md").read_text()
+    assert "role_naming=user_business_role" in next_steps
+    assert "publisher and independent watchdog" in next_steps and "version 0.3.1" in next_steps
+    operating_limits = json.loads((output / "deployment-plan.json").read_text())["operating_limits"]
+    assert any("user_business_role" in limit for limit in operating_limits)
+    assert any("watchdog version 0.3.1" in limit for limit in operating_limits)
     assert state_path(config, config_path) == output / "state"
     assert not (output / "state").exists()
     assert main(["validate", "--config", str(config_path)]) == 0

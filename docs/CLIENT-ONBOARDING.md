@@ -108,7 +108,7 @@ Review the inventory with the client and populate `selections.json`:
 - Select logical table names and supported scalar columns from metadata. Start with a representative pilot covering the client's actual security cases.
 - Set a client-specific `deployment_name` beginning `pw_` and choose `required_access_paths` from `onelake`, `spark`, `sql` and `direct_lake`.
 - The onboarding renderer creates a configuration with empty `serving_items` for new isolated app-created items. Existing deployment reuse is an advanced operating workflow, not an onboarding shortcut.
-- Retain timed retention and the default quota unless the client has evidence for a different selection. A quota above the default needs the actual support/approval reference for this destination. The renderer sets readable names and one source worker.
+- Retain timed retention and the default quota unless the client has evidence for a different selection. A quota above the default needs the actual support/approval reference for this destination. The renderer sets `user_business_role` names and one source worker. Both publisher and watchdog must support the version 0.3.1 ownership encoding before publication.
 
 Discovery supports progressive detail. With `tables: []`, it lists the table catalog. To inspect column candidates for a chosen table, add an entry such as `{"name":"account","columns":[]}` to the request and discover into a new file. Candidate columns are not yet qualified for projection. Then select explicit scalar columns in both the request and selections, set the same destination `workspace_id` in both files, and perform final discovery:
 
@@ -129,7 +129,7 @@ python -m policyweaver.onboarding configure --request clients/bank-pilot/intake/
 python -m policyweaver.onboarding validate --config clients/bank-pilot/deployment/policyweaver.config.json
 ```
 
-Review `deployment-plan.json`, `policyweaver.config.json` and `NEXT-STEPS.md`. Confirm the source organization ID, destination workspace, exact audience, table/column selections, Azure CLI authentication, namespace, role quota and private state path. The initial renderer uses `discover_readers: false`, an empty serving-item map, a 1,000-reader planner ceiling, one source worker and readable names. Managed identity is a later reviewed migration, not a laptop credential fallback. Validation checks configuration; it does not prove operator permissions, a safe destination or runtime enforcement.
+Review `deployment-plan.json`, `policyweaver.config.json` and `NEXT-STEPS.md`. Confirm the source organization ID, destination workspace, exact audience, table/column selections, Azure CLI authentication, namespace, role quota and private state path. The initial renderer uses `discover_readers: false`, an empty serving-item map, a 1,000-reader planner ceiling, one source worker and `user_business_role` names. Those names contain the username, home BU and one prioritized role title with action words removed. Managed identity is a later reviewed migration, not a laptop credential fallback. Validation checks configuration; it does not prove operator permissions, a safe destination or runtime enforcement.
 
 The Power Platform environment ID is retained as intake context when supplied. The adapter's `organization_id` must be the Dataverse organization GUID. Reader values are Entra object IDs. Lakehouse IDs come from provisioning or verified app ownership, never from a name match or another environment's example.
 

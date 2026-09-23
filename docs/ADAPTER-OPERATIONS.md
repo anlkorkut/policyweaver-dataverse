@@ -20,6 +20,13 @@ Impersonation applies the source execution context; it is not an authorization b
 
 ## Configuration
 
+For new deployments, prefer the onboarding renderer described in `CLIENT-ONBOARDING.md`.
+It selects `role_naming: "user_business_role"` (username + home BU + one business
+role title, with action words removed). Existing deployments must opt in before
+fresh preparation and upgrade all publishers and independent watchdogs to version
+0.3.1 first. See [naming and ownership](READABLE-ROLES-AND-DIVERSITY.md). Omitting
+the option retains legacy names and configuration compatibility.
+
 Copy `examples/policyweaver.config.example.json` or create a JSON file using the shape below. The example uses deliberately fictional IDs and must be replaced:
 
 ```json

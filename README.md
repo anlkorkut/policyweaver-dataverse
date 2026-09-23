@@ -82,7 +82,7 @@ flowchart LR
     W[Independent expiry watchdog] -->|Withdraw timed expired roles| R
 ```
 
-Each row carries `__pw_reader` and `__pw_generation`. A role per reader per shard filters those values and exposes selected business columns. POA and record-specific field sharing are demonstrated by comparing resulting rows and field values with Dataverse, rather than by one displayed Fabric rule per source grant. Readable role names summarize reader, role and BU context; they label cumulative access rather than copy Dataverse business roles one for one.
+Each row carries `__pw_reader` and `__pw_generation`. A role per reader per shard filters those values and exposes selected business columns. POA and record-specific field sharing are demonstrated by comparing resulting rows and field values with Dataverse, rather than by one displayed Fabric rule per source grant. New-client role names contain the username, home BU and one prioritized role title, with action words removed: `pwtest001BNYWealthBNYMContactOwnerRole`. They label cumulative access rather than copy source roles one for one. See [naming and the version 0.3.1 controller upgrade](docs/READABLE-ROLES-AND-DIVERSITY.md); existing deployments require a new generation to change naming modes.
 
 The source operator needs impersonation and sufficient table/field access. FetchXML proof requires the necessary reader `systemuser` access. Readers without it can use the optional [signed Dataverse `pw_ReadContext` plug-in](docs/READ-CONTEXT-PLUGIN.md), with an independently reviewed assembly SHA-256 and qualification of the installed function. Do not grant broad reader roles just to make identity proof succeed.
 

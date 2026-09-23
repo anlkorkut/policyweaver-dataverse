@@ -1,6 +1,6 @@
 # Migrate from the earlier dvaccess repository
 
-The initial repository revision, [94cbc148](https://github.com/anlkorkut/policyweaver-dataverse/tree/94cbc148d71ad805d3ba0c3d5391f898e22b7845), contains `dvaccess 0.1.0`. It compiled selected Dataverse security topology into static OneLake access profiles. The current `policyweaver 0.3.0` application instead materializes Dataverse's effective Read results per reader, including Basic ownership, POA and record-specific field-security outcomes.
+The initial repository revision, [94cbc148](https://github.com/anlkorkut/policyweaver-dataverse/tree/94cbc148d71ad805d3ba0c3d5391f898e22b7845), contains `dvaccess 0.1.0`. It compiled selected Dataverse security topology into static OneLake access profiles. The current `policyweaver 0.3.1` application instead materializes Dataverse's effective Read results per reader, including Basic ownership, POA and record-specific field-security outcomes.
 
 This is a product and configuration migration. The old source remains in Git history. Its `dvaccess` CLI, YAML settings, snapshots, profile hashes, group reconciliation and generated policies are not inputs to the new adapter. Do not rename an old configuration file to make it appear compatible.
 

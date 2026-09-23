@@ -74,7 +74,7 @@ Configuration, inventory and plans contain identities and administrative topolog
 | Choice | New-client starting point | Evidence before widening it |
 | --- | --- | --- |
 | Identity proof | `fetchxml` until the selected path is qualified | Readers with business Read and no `prvReadUser` need the verified signed `pw_ReadContext` API; configure the reviewed DLL hash, not an invented or historical digest |
-| Role naming | `readable` | Matching publisher/watchdog version; names capped at 124 characters for SQL compatibility; manifest retains complete role provenance |
+| Role naming | `user_business_role` | Version 0.3.1+ publisher/watchdog; username + home BU + one role title with action words removed; 124-character cap; complete original provenance retained |
 | Retention | `timed` | Manual retention is an explicit client choice that waives automatic age withdrawal; it is not a production revocation guarantee |
 | Source workers | `1` | Compare parallel source results with sequential results and measure throttling before enabling 2–4 |
 | Role quota | `250`, with reserved headroom | Confirm actual per-item quota and foreign-role headroom; an approved exception elsewhere is not inherited |

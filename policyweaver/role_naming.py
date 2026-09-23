@@ -1,8 +1,9 @@
 """Human labels for native roles, independent of all authorization decisions.
 
 OneLake allows 128 alphanumeric characters, but SQL endpoint synchronization
-adds ``OLS_`` and therefore supports only 124. The final 50 characters bind a
-name to its deployment and complete reader GUID; labels are never identifiers.
+adds ``OLS_`` and therefore supports only 124. Legacy readable names reserve an
+identity suffix. User/business-role names contain display labels only; their
+caller must bind ownership independently and reject case-insensitive collisions.
 """
 from __future__ import annotations
 
@@ -20,6 +21,36 @@ def _token(value: str, fallback: str) -> str:
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
     words = re.findall(r"[A-Za-z0-9]+", value)
     return "".join(word[:1].upper() + word[1:] for word in words) or fallback
+
+
+def _business_role_token(value: str) -> str:
+    """Remove recognizable privilege actions, retaining actual business words.
+
+    Word and camel/Pascal boundaries are significant: ``Reader`` and
+    ``Ownership`` are not actions. Protect the product name ``SharePoint``
+    explicitly. ``Only`` and ``To`` are removed only as parts of Read Only and
+    Append To; these words may be meaningful elsewhere in a business title.
+    Never infer boundaries inside an undelimited uppercase or lowercase word.
+    """
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    parts = [part for word in re.findall(r"[A-Za-z0-9]+", value)
+             for part in re.findall(r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+|[0-9]+", word)]
+    actions = {"create", "read", "write", "update", "delete", "append", "appendto", "assign", "share", "readonly"}
+    kept, index = [], 0
+    while index < len(parts):
+        current = parts[index]
+        folded = current.casefold()
+        following = parts[index + 1].casefold() if index + 1 < len(parts) else ""
+        if folded == "share" and following == "point":
+            kept.extend(parts[index:index + 2])
+            index += 2
+        elif (folded, following) in {("read", "only"), ("append", "to")}:
+            index += 2
+        else:
+            if folded not in actions:
+                kept.append(current)
+            index += 1
+    return "".join(word[:1].upper() + word[1:] for word in kept)
 
 
 def _text(value: Any, label: str) -> str:
@@ -92,6 +123,31 @@ class ReaderRoleLabel:
         role_budget = _LABEL_BUDGET - len(alias) - len(unit) - 2 - len(extra)
         role = _token(self.primary_role_name, "Role")[:role_budget]
         return role + extra + alias + "BU" + unit
+
+    def user_business_role_token(self) -> str:
+        """Return only the username, home business unit and one source role.
+
+        Preserve username casing and compact the other two labels into words.
+        Reserve room for every component; unused username/BU space belongs to
+        the role title. Full labels remain in ``audit()``. This is a display
+        name, never an identity: callers must reject collisions after truncation
+        instead of silently appending an identifier or changing permissions.
+        """
+        alias_text = _text(self.alias, "alias").split("@", 1)[0]
+        alias_ascii = unicodedata.normalize("NFKD", alias_text).encode("ascii", "ignore").decode()
+        alias = re.sub(r"[^A-Za-z0-9]", "", alias_ascii)[:32]
+        unit = _token(_text(self.business_unit_name, "business unit"), "")[:36]
+        if not self.role_names:
+            raise ValueError("User/business-role names require a source role name")
+        role_text = _text(self.role_names[0], "role name")
+        role = _business_role_token(role_text)
+        if not alias or not re.match(r"[A-Za-z]", alias):
+            raise ValueError("User/business-role names require a username starting with a letter")
+        if not unit:
+            raise ValueError("User/business-role names require usable business unit and source role labels")
+        if not role:
+            raise ValueError("Source role title has no usable business label after removing privilege actions")
+        return alias + unit + role[:MAX_ROLE_NAME_LENGTH - len(alias) - len(unit)]
 
     def audit(self) -> dict[str, Any]:
         return {"alias": self.alias, "business_unit_name": self.business_unit_name,

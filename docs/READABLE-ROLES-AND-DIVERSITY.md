@@ -10,7 +10,37 @@ Different readers can legitimately access the same selected tables while receivi
 
 Choose a client-specific fixture objective: distinct combinations, different table counts, or representative security semantics. A strictly increasing one-through-200 table ladder requires at least 200 independently variable tables. Include existing direct and inherited grants when proving diversity; adding a narrower direct role cannot remove a broader inherited grant.
 
-## Name format in version 0.2.3
+## Simple names in version 0.3.1
+
+New-client onboarding selects `"role_naming": "user_business_role"`. Existing deployments opt in by setting that value before preparing a **new** generation. Configurations that omit the option still mean `legacy`, preserving old fingerprints and prepared manifests.
+
+```text
+<Username><HomeBusinessUnit><OneBusinessRoleTitle>
+pwtest001BNYWealthBNYMContactOwnerRole
+```
+
+There is no added `PW`, `BU`, role count, privilege-action label or ID suffix. The username is first, its original casing is retained and the UPN domain is omitted. Spaces and punctuation are removed because Fabric requires alphanumeric names. Username and BU receive up to 32 and 36 characters respectively; the selected role uses the remaining space within 124 characters. Full source strings remain in private audit evidence.
+
+The title still prioritizes active BNYM, BNY and ECRM roles. Action words are removed from the selected title for display, including Create, Read, Write, Update, Delete, Append, Assign and Share. This does not change privileges or the original audit title. An unusable title/username/BU or a case-insensitive collision after normalization/truncation blocks preparation; the application never adds an undisclosed identifier or broadens access to resolve it.
+
+One displayed role is a deterministic summary of cumulative access. It does not mean only that role contributes permissions, and the home BU does not replace the BU anchors of inherited roles.
+
+### Ownership without an ID in the name
+
+The canonical RLS predicate carries a versioned deployment/tenant annotation:
+
+```sql
+SELECT * FROM [dbo].[client_account]
+WHERE __pw_reader = '<reader-guid>'
+AND __pw_reader <> 'PolicyWeaverOwnerV1<tenant-and-deployment-sha256>'
+AND __pw_generation = <generation>
+```
+
+The marker is deliberately not a GUID. Together with reader-GUID equality, the extra inequality is true for all matching reader rows; it grants no additional access and requires no new data column. It is an ownership annotation, **not a secret, signature or expiry lease**. The publisher and watchdog require the exact canonical row/column policy, single matching tenant/reader membership and deployment-owned table paths before treating a marked role as managed. Damaged marked policies block mutation. Unmarked foreign policies remain untouched; overlapping access or conflicting names block publication.
+
+Version 0.3.1 recognizes old and new managed formats for replacement/withdrawal. Older controllers cannot recognize this new encoding. Upgrade **every publisher and independent watchdog** before publishing it; do not downgrade while these roles remain. A fresh preparation and normal engine qualification are required. A naming API dry run alone does not establish SQL/Spark enforcement.
+
+## Previous readable format (version 0.2.3)
 
 Set `"role_naming": "readable"` to opt in. The default remains `legacy`, preserving existing configuration fingerprints and immutable generations.
 
@@ -40,12 +70,12 @@ For a source role such as BNY Pershing RIA match, Organization Read on Business 
 
 ## Safe rollout
 
-1. Upgrade every independent watchdog to this implementation before publishing readable names. Verify the new scheduled execution while it still recognizes existing legacy policies. See `deploy/README.md`.
-2. Set readable naming and the reviewed table selection in the publisher configuration. Prepare a fresh generation; editing the old manifest or renaming roles manually is unsupported.
-3. Review the mapping, run the native policy dry run, inspect the actual serving boundary and publish normally. The publisher replaces both owned name formats using ETags and preserves unrelated policies.
+1. Upgrade every publisher and independent watchdog to version 0.3.1 before publishing `user_business_role` names. Verify the new scheduled execution while it still recognizes existing policies. See `deploy/README.md`.
+2. Set the requested naming mode and reviewed table selection in the publisher configuration. Prepare a fresh generation; editing the old manifest or renaming roles manually is unsupported.
+3. Review the mapping, run the native policy dry run, inspect the actual serving boundary and publish normally. The publisher replaces supported managed formats using ETags and preserves unrelated policies.
 4. Check each reader's membership, permitted tables and representative row/field results through actual consumer sessions. Publication and role-name validation do not establish engine enforcement or data synchronization.
 
-The publisher and upgraded watchdog recognize both formats, including explicit withdrawal. Do not roll back a watchdog to an implementation that understands only legacy names while readable roles exist.
+The publisher and upgraded watchdog recognize all three formats, including explicit withdrawal. Do not roll back a controller to an implementation that cannot identify the published policy encoding.
 
 ## Fixture fidelity and acceptance
 

@@ -303,7 +303,12 @@ def provision(runtime, *, client_factory=ProvisioningClient, ensure_table=_ensur
             source.verify_environment()
             readers = runtime.select_readers(source)
             tables = [source.table_metadata(t.name, t.columns) for t in config.tables]
-        plan = role_plan(config, tables, [r.entra_id for r in readers], 1)
+        # Provisioning needs only the complete reader/table shard dimensions.
+        # It publishes no reader policy and does not acquire source role labels.
+        # Use an explicit legacy sizing copy; retain the requested naming mode
+        # in the persisted configuration for subsequent authoritative prepare.
+        sizing_config = config.model_copy(update={"role_naming": "legacy"})
+        plan = role_plan(sizing_config, tables, [r.entra_id for r in readers], 1)
         if receipt_path.exists():
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             if any(receipt.get(k) != v for k, v in {

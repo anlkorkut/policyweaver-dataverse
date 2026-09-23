@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from .config import AdapterConfig, load_config
 from .fabric_native import (
     FabricNativeClient, FabricRequestError, NativePolicyError, RoleSnapshot,
-    TableSpec, _reader_role, _semantic_roles,
+    TableSpec, _reader_role, _row_predicate, _semantic_roles, _simple_role_owned,
 )
 
 MIN_GENERATION = 1_577_836_800_000_000  # 2020-01-01 UTC
@@ -91,6 +91,7 @@ def assess(snapshot: RoleSnapshot, fabric: FabricNativeClient, config: AdapterCo
             others.append(role)
             continue
         name = role["name"]
+        mode = "user_business_role" if _simple_role_owned(role, config.tenant_id, config.role_prefix) else "legacy"
         reader = role["members"]["microsoftEntraMembers"][0]["objectId"]
         rules = role.get("decisionRules")
         if not isinstance(rules, list) or not rules:
@@ -130,15 +131,15 @@ def assess(snapshot: RoleSnapshot, fabric: FabricNativeClient, config: AdapterCo
             # Recognize otherwise canonical mixed generations for withdrawal,
             # never as fresh. Regenerate every predicate without trusting SQL.
             canonical["constraints"]["rows"] = [
-                _reader_role(config.tenant_id, reader, (table,), generation,
-                             config.role_prefix)["decisionRules"][0]["constraints"]["rows"][0]
+                {"tablePath": table.path, "value": _row_predicate(
+                    table, reader, generation, config.tenant_id, config.role_prefix, mode)}
                 for table, generation in zip(rule_tables, rule_generations)]
             expected_rules.append(canonical)
         # Accept the legacy one-table-per-rule encoding solely for assessment
         # and withdrawal. The publisher emits only one rule with all paths.
         expected = _reader_role(config.tenant_id, reader, (), 1, config.role_prefix)
-        # _owned already bound either supported name format to this exact
-        # deployment, tenant and full reader GUID. Human labels are not needed
+        # _owned already bound the name suffix or canonical RLS annotation to
+        # this deployment, tenant and full reader GUID. Labels are not needed
         # by this stateless watchdog and may never change the policy checks.
         expected["name"] = name
         expected["decisionRules"] = expected_rules

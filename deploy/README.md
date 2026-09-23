@@ -17,9 +17,20 @@ Fabric requires role names to start with a letter and contain only letters and
 digits; names are unique without regard to case. The general limit is 128
 characters, but the [SQL analytics endpoint supports at most 124 characters](https://learn.microsoft.com/en-us/fabric/onelake/security/sql-analytics-endpoint-onelake-security#limitations)
 because its `OLS_` prefix uses four more. The application caps readable names at
-124 and retains the complete deployment hash and reader GUID.
+124. The supported ownership encoding depends on the selected naming mode.
 
-The publisher's `role_naming` defaults to `"legacy"` for compatibility. Legacy
+New onboarding uses `"role_naming": "user_business_role"` in version 0.3.1:
+username + home BU + one prioritized source-role title with action words removed.
+There is no added PW prefix, role count or ID suffix. The complete canonical RLS
+predicate instead includes `__pw_reader <> 'PolicyWeaverOwnerV1<sha256>'`, binding
+the tenant/deployment annotation alongside the existing reader-GUID equality.
+The marker is not a GUID, so it excludes no matching authorized reader rows.
+It is an ownership annotation, not an access grant, secret, signature or lease.
+The watchdog validates exact scope, single-member binding and policy shape;
+malformed marked roles block mutation. Unmarked overlapping policies are foreign
+and reported as critical rather than automatically removed.
+
+Omitting `role_naming` still means `"legacy"` for compatibility. Legacy
 names are `PW<deployment-hash16>R<reader-guid32>`. With `"readable"`, names become
 `PW<primary-role>Plus<N><reader-alias>BU<home-BU>N<deployment-hash16>R<reader-guid32>`;
 `Plus<N>` appears only when the reader has additional distinct root roles.
@@ -28,23 +39,24 @@ in the audit mapping. Names are shortened and punctuation is removed; full role
 titles, role IDs, assignment origins and BUs remain in the generation manifest.
 The displayed home BU is not the scope of every inherited role or row grant.
 
-Both formats use the first 16 hexadecimal characters of the SHA-256 digest of
-the configured ownership prefix. The publisher and updated watchdog recognize
-both formats and verify the entire reader GUID against the single member and
-tenant. Descriptive labels never authorize access or determine ownership. Do
+These two older formats use the first 16 hexadecimal characters of the SHA-256
+digest of the ownership prefix in the name. Version 0.3.1 recognizes all three
+formats and verifies the reader GUID against the single member and tenant.
+Descriptive labels never authorize access or determine ownership. Do
 not identify owned roles using the business-role title or literal deployment
 name. The complete policy shape and member binding are checked before withdrawal.
 
-**Upgrade every independent watchdog before publishing readable names.** An
-older watchdog does not recognize the new name format and cannot provide its
+**Upgrade every publisher and independent watchdog to version 0.3.1 before
+publishing user_business_role names.** An older watchdog cannot recognize the
+new ownership encoding and cannot provide its
 normal expiry withdrawal for those roles. Deploy the tested image by digest,
 wait for old executions to finish, verify a healthy new scheduled inspection,
-then set the publisher to `role_naming: "readable"` and prepare a new generation.
+then set the publisher to `role_naming: "user_business_role"` and prepare a new generation.
 The changed configuration fingerprint prevents reuse of a legacy preparation;
 the normal ETag-protected role replacement removes old owned names and publishes
 the new names together. Renaming an existing generation is prohibited. Explicit
-withdrawal in the updated application supports both formats. Do not roll back
-to an old watchdog while any readable roles remain published.
+withdrawal in the updated application supports all three formats. Do not roll
+back to a controller that cannot identify the published encoding.
 
 ```powershell
 python -m policyweaver.native_watchdog --config deployment.json --inspect
